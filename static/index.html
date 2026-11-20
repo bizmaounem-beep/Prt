@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AGV Morocco - Packing Line SCADA & Stop Monitoring</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- AUTHENTICATION SCREEN -->
+  <div id="login-screen" class="auth-wrapper">
+    <div class="auth-card">
+      <div class="auth-header">
+        <span class="auth-badge">ENTERPRISE SCADA / MES</span>
+        <h1 class="auth-title">AGV MOROCCO PACKING FACILITY</h1>
+        <p class="auth-subtitle">Production Stop Monitoring & Multi-PLC Telemetry Gateway</p>
+      </div>
+
+      <form id="login-form">
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label" for="login-username">Operator / Manager Username</label>
+          <input type="text" id="login-username" class="input-field" placeholder="Enter username" required autofocus autocomplete="username">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label" for="login-password">Security Password</label>
+          <input type="password" id="login-password" class="input-field" placeholder="Enter password" required autocomplete="current-password">
+        </div>
+
+        <div id="login-error-msg" style="display: none; color: #f87171; font-size: 11px; margin-bottom: 12px;"></div>
+
+        <button type="submit" class="btn btn-primary" style="width: 100%; height: 36px; font-weight: 600;">
+          Authenticate & Enter System
+        </button>
+      </form>
+
+      <div class="auth-demo-hint">
+        <strong>Pre-configured Roles:</strong><br>
+        &bull; <strong>Director:</strong> <code>director</code> / <code>director123</code> (Dashboard + Excel Export)<br>
+        &bull; <strong>Supervisor:</strong> <code>supervisor</code> / <code>supervisor123</code> (Users, History, Reasons)<br>
+        &bull; <strong>Pilot:</strong> <code>pilot</code> / <code>pilot123</code> (Start/Stop Production, Lines)<br>
+        &bull; <strong>Operator:</strong> <code>operator1</code> / <code>op123</code> (Assigned station, Camera)<br>
+        &bull; <strong>Admin:</strong> <code>admin</code> / <code>admin123</code> (Multi-PLC & Dynamic Tag Mapping)
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APPLICATION SCREEN (Visible when authenticated) -->
+  <div id="app-screen" style="display: none; flex-direction: column; min-height: 100vh;">
+    
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="brand-section">
+        <span class="logo-badge" id="topbar-plc-badge">OMRON FINS</span>
+        <span class="brand-title">AGV MOROCCO &bull; PACKING LINE STOP MONITOR</span>
+      </div>
+
+      <div class="top-controls">
+        <!-- PLC Comms Status -->
+        <div id="plc-status-pill" class="indicator">
+          <span class="dot dot-red"></span>
+          <span id="plc-status-text">PLC OFFLINE</span>
+        </div>
+
+        <!-- Production Gating Status -->
+        <div id="prod-status-pill" class="indicator">
+          <span class="dot dot-red"></span>
+          <span id="prod-status-text">PRODUCTION IDLE</span>
+        </div>
+
+        <!-- Authenticated User Profile -->
+        <div class="user-profile-badge">
+          <svg width="13" height="13" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4zm-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10c-2.29 0-3.516.68-4.168 1.332-.678.678-.83 1.418-.832 1.664h10z"/>
+          </svg>
+          <span id="user-display">Loading...</span>
+        </div>
+
+        <!-- Sign Out Button -->
+        <button id="btn-logout" class="btn btn-secondary btn-sm" title="Sign out of system">
+          Sign Out
+        </button>
+
+        <!-- Clock -->
+        <div class="indicator" id="live-clock">--:--:--</div>
+      </div>
+    </header>
+
+    <!-- Role-Based Navigation Bar -->
+    <nav class="nav-bar" id="nav-tabs">
+      <!-- Populated dynamically via JS based on authenticated role -->
+    </nav>
+
+    <!-- Main Workspace Content -->
+    <main class="main-content">
+
+      <!-- Production Gating Banner -->
+      <div id="production-banner" class="prod-banner inactive">
+        <div class="banner-left">
+          <span class="dot dot-red" id="banner-dot"></span>
+          <div>
+            <div class="banner-title" id="banner-title">PRODUCTION IS STOPPED / IDLE</div>
+            <div class="banner-desc" id="banner-desc">
+              Pilot has not started active production. Machine stops and faults are currently ignored to prevent false downtime penalties during setup/cleaning.
+            </div>
+          </div>
+        </div>
+        <div id="banner-action-wrap"></div>
+      </div>
+
+      <!-- VIEW: DASHBOARD (Director, Supervisor, Pilot, Admin) -->
+      <section id="view-dashboard" class="app-view">
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-header">Stops Today</div>
+            <div class="kpi-value" id="kpi-stops-today">0</div>
+            <div class="kpi-footer" id="kpi-unannotated-text">0 pending operator reason</div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-header">Cumulative Downtime</div>
+            <div class="kpi-value" id="kpi-downtime">0m 00s</div>
+            <div class="kpi-footer">Based on active production sessions</div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-header">Active Stoppages</div>
+            <div class="kpi-value" id="kpi-active-stops" style="color: #34d399;">0</div>
+            <div class="kpi-footer" id="kpi-active-footer">All monitored lines in motion</div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-header">Sizer Speed (D2050)</div>
+            <div class="kpi-value" id="kpi-cycle-rate">0 <span style="font-size: 13px; font-weight: normal; color: var(--text-secondary);">cpm</span></div>
+            <div class="kpi-footer">Central Calibrador Cycle Rate</div>
+          </div>
+        </div>
+
+        <div class="section-title">
+          <span>Monitored Line Machines (Strict Hardware Polling)</span>
+          <span id="driver-mode-tag" style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">PLC: INITIALIZING</span>
+        </div>
+
+        <div class="machine-grid" id="machine-cards-grid"></div>
+
+        <div class="section-title">
+          <span>Active Incidents Underway</span>
+          <span style="font-size: 11px; color: var(--text-muted);">Real-time live counting stopwatch</span>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table" id="active-stops-table">
+            <thead>
+              <tr>
+                <th>Machine Code</th>
+                <th>Machine Name</th>
+                <th>Started At</th>
+                <th>Live Downtime Duration</th>
+                <th>PLC State</th>
+                <th>Assigned Reason</th>
+                <th>Photo</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="active-stops-tbody">
+              <tr>
+                <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 18px;">
+                  No active machine stoppages at this moment.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VIEW: REPORTS & EXCEL EXPORT (Director, Admin) -->
+      <section id="view-reports" class="app-view" style="display: none;">
+        <div class="section-title">
+          <span>Production Downtime Reports & Export</span>
+          <span>Director Access</span>
+        </div>
+
+        <div class="filter-bar">
+          <div class="filter-item">
+            <label class="form-label">Shift</label>
+            <select id="report-shift" class="select-field">
+              <option value="">All Shifts</option>
+              <option value="Morning">Morning Shift</option>
+              <option value="Afternoon">Afternoon Shift</option>
+              <option value="Night">Night Shift</option>
+            </select>
+          </div>
+
+          <div class="filter-item">
+            <label class="form-label">Date From</label>
+            <input type="date" id="report-date-from" class="input-field">
+          </div>
+
+          <div class="filter-item">
+            <label class="form-label">Date To</label>
+            <input type="date" id="report-date-to" class="input-field">
+          </div>
+
+          <div class="filter-item">
+            <label class="form-label">Machine</label>
+            <select id="report-machine" class="select-field">
+              <option value="">All Machines</option>
+            </select>
+          </div>
+
+          <div class="filter-item" style="flex: 1; display: flex; flex-direction: row; gap: 8px; justify-content: flex-end;">
+            <button id="btn-apply-report-filter" class="btn btn-secondary">Filter Records</button>
+            <button id="btn-download-excel" class="btn btn-success">
+              <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                <path d="M5.884 6.68a.5.5 0 1 0-.768.64L7.349 10l-2.233 2.68a.5.5 0 0 0 .768.64L8 10.748l2.116 2.572a.5.5 0 0 0 .768-.64L8.651 10l2.233-2.68a.5.5 0 0 0-.768-.64L8 9.252 5.884 6.68z"/>
+                <path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5v2z"/>
+              </svg>
+              Download Excel (.xlsx)
+            </button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table" id="report-preview-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Machine Code</th>
+                <th>Machine Name</th>
+                <th>Shift</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+                <th>Duration (sec)</th>
+                <th>State</th>
+                <th>Reason Category</th>
+                <th>Reason Details</th>
+                <th>Operator</th>
+                <th>Photo</th>
+              </tr>
+            </thead>
+            <tbody id="report-preview-tbody">
+              <tr>
+                <td colspan="12" style="text-align: center; color: var(--text-muted); padding: 18px;">
+                  Loading report data...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VIEW: PILOT PRODUCTION & LINE ASSIGNMENTS (Pilot, Admin) -->
+      <section id="view-pilot" class="app-view" style="display: none;">
+        <div class="section-title">
+          <span>Production Session Control & Line Allocations</span>
+          <span>Pilot Console</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+          <div class="kpi-card" style="gap: 12px;">
+            <div class="kpi-header">Production Session State</div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <div id="pilot-session-status-text" style="font-size: 16px; font-weight: 700; color: #ef4444;">INACTIVE / STOPPED</div>
+                <div id="pilot-session-meta" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">No shift session is running.</div>
+              </div>
+              <div id="pilot-session-btns"></div>
+            </div>
+
+            <div id="pilot-start-form" style="display: flex; gap: 10px; margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 10px;">
+              <div style="flex: 1;">
+                <label class="form-label">Shift</label>
+                <select id="pilot-shift-select" class="select-field">
+                  <option value="Morning">Morning (06:00 - 14:00)</option>
+                  <option value="Afternoon">Afternoon (14:00 - 22:00)</option>
+                  <option value="Night">Night (22:00 - 06:00)</option>
+                </select>
+              </div>
+              <div style="flex: 1;">
+                <label class="form-label">Target Rate (cpm)</label>
+                <input type="number" id="pilot-target-rate" class="input-field" value="50">
+              </div>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-header">Pilot Operational Rule</div>
+            <p style="font-size: 12px; color: var(--text-secondary); line-height: 1.5;">
+              &bull; <strong>Strict Gating:</strong> Machine stops and alarm codes are counted and logged into official downtime reports <em>only while production is active</em>.<br>
+              &bull; If machines stop during cleaning, maintenance or lunch breaks when production is ended, stops are completely ignored.
+            </p>
+          </div>
+        </div>
+
+        <div class="section-title">
+          <span>Operator Line Allocations</span>
+          <span style="font-size: 11px; color: var(--text-muted);">Assign which operator oversees each machine</span>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Machine Code</th>
+                <th>Machine Name</th>
+                <th>Assigned Operator</th>
+                <th>Allocated By</th>
+                <th>Assigned At</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="pilot-assignments-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VIEW: SUPERVISOR USER MANAGEMENT & REASONS (Supervisor, Admin) -->
+      <section id="view-supervisor" class="app-view" style="display: none;">
+        <div class="section-title">
+          <span>User Accounts & Security Credentials</span>
+          <button id="btn-open-add-user" class="btn btn-primary btn-sm">+ Add New User</button>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>User ID</th>
+                <th>Username</th>
+                <th>Full Name</th>
+                <th>Role</th>
+                <th>Created Date</th>
+                <th>Single-Click Action</th>
+              </tr>
+            </thead>
+            <tbody id="supervisor-users-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="section-title" style="margin-top: 24px;">
+          <span>Stoppage Reasons Catalog Management</span>
+          <button id="btn-open-add-reason" class="btn btn-secondary btn-sm">+ Add New Reason</button>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Category</th>
+                <th>Reason Name</th>
+                <th>Code</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="supervisor-reasons-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VIEW: HISTORICAL STOPS (Supervisor, Pilot, Admin) -->
+      <section id="view-history" class="app-view" style="display: none;">
+        <div class="section-title">
+          <span>Historical Stop Logs & Operator Annotations</span>
+          <button id="btn-refresh-history" class="btn btn-secondary btn-sm">Refresh History</button>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Machine</th>
+                <th>Shift</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th>Reason Category</th>
+                <th>Detailed Reason / Operator Notes</th>
+                <th>Defect Photo</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="history-stops-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VIEW: OPERATOR CONSOLE (Operator) -->
+      <section id="view-operator" class="app-view" style="display: none;">
+        <div class="section-title">
+          <span>Operator Assigned Machine Station</span>
+          <span id="op-assigned-machine-badge" class="status-badge badge-manual">MACHINE: LOADING...</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+          <div class="kpi-card" id="operator-machine-card" style="padding: 16px;">
+            <div class="kpi-header">Assigned Station Status</div>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin: 8px 0;">
+              <div>
+                <div id="op-machine-title" style="font-size: 18px; font-weight: 700; color: #fff;">VOLC-01</div>
+                <div id="op-machine-desc" style="font-size: 12px; color: var(--text-secondary);">Box Tipper / Volcador</div>
+              </div>
+              <div id="op-status-badge" class="status-badge badge-running">RUNNING</div>
+            </div>
+
+            <div id="op-stopwatch-box" class="stopwatch-alert" style="display: none;">
+              <div>
+                <div style="font-size: 11px; font-weight: 700; color: #f87171; text-transform: uppercase;">Active Machine Stoppage!</div>
+                <div style="font-size: 11px; color: #fca5a5;">Please classify stoppage reason & take photo</div>
+              </div>
+              <div class="stopwatch-time" id="op-stopwatch-timer">00:00:00</div>
+            </div>
+          </div>
+
+          <div class="kpi-card" style="padding: 16px;">
+            <div class="kpi-header">Classify Stoppage / Add Photo Evidence</div>
+            
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label class="form-label">Stoppage Cause Reason</label>
+              <select id="op-reason-select" class="select-field">
+                <option value="">-- Select Root Cause Reason --</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 10px;">
+              <label class="form-label">Operator Notes & Description</label>
+              <textarea id="op-notes-input" class="textarea-field" rows="2" placeholder="e.g. Broken box jammed in tipper chain mechanism..."></textarea>
+            </div>
+
+            <div style="display: flex; gap: 8px;">
+              <button id="op-btn-open-camera" class="btn btn-secondary btn-sm" style="flex: 1;">
+                <svg width="13" height="13" fill="currentColor" viewBox="0 0 16 16">
+                  <path d="M15 12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h1.172a3 3 0 0 0 2.12-.879l.83-.828A1 1 0 0 1 7.829 3h.342a1 1 0 0 1 .707.293l.828.828A3 3 0 0 0 11.828 5H13a1 1 0 0 1 1 1v6z"/>
+                  <path d="M8 11a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zm0 1a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7zM3 6.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0z"/>
+                </svg>
+                Camera Snapshot
+              </button>
+              <button id="op-btn-save-annotation" class="btn btn-primary btn-sm" style="flex: 1;">Save Classification</button>
+            </div>
+
+            <div id="op-photo-preview-wrap" style="margin-top: 10px; display: none; text-align: center;">
+              <img id="op-photo-preview-img" class="photo-preview" src="" alt="Captured Defect">
+              <div style="font-size: 11px; color: var(--color-success); margin-top: 4px;">Photo attached successfully!</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: ADMIN MULTI-PLC & DYNAMIC TAG CONFIG (Admin) -->
+      <section id="view-admin" class="app-view" style="display: none;">
+        <div class="section-title">
+          <span>Multi-PLC Connections Manager</span>
+          <button id="btn-open-add-plc" class="btn btn-primary btn-sm">+ Register New PLC Connection</button>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Connection Profile Name</th>
+                <th>Brand</th>
+                <th>Protocol</th>
+                <th>IP Address</th>
+                <th>Port</th>
+                <th>Node ID</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="admin-plc-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="section-title" style="margin-top: 24px;">
+          <span>Dynamic Machine Tag & Address Mapping</span>
+          <span style="font-size: 11px; color: var(--text-muted);">Configure which PLC registers correspond to machine states, run bits, and speed counters</span>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Machine Code</th>
+                <th>Machine Name</th>
+                <th>Assigned PLC Profile</th>
+                <th>Memory Area</th>
+                <th>State Word (estado_maq)</th>
+                <th>Run Bit Word.Bit</th>
+                <th>Rate Register (cpm)</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="admin-mapping-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VIEW: SYSTEM DOCUMENTATION & SPECS (All Users) -->
+      <section id="view-docs" class="app-view" style="display: none;">
+        <div class="section-title">
+          <span>System Documentation, Architecture & Conversation Specifications</span>
+          <button id="btn-refresh-docs" class="btn btn-secondary btn-sm">Refresh Document</button>
+        </div>
+        <div class="docs-content" id="docs-content-body">
+          Loading system documentation...
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- MODAL: CAMERA CAPTURE -->
+  <div id="modal-camera" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Live Camera Snapshot / Photo Upload</span>
+        <button class="modal-close" id="btn-close-camera">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="camera-box">
+          <video id="camera-video" class="camera-video" autoplay playsinline></video>
+          <canvas id="camera-canvas" style="display: none;"></canvas>
+          <div id="camera-fallback-msg" style="display: none; color: var(--text-muted); text-align: center; font-size: 12px; padding: 12px;">
+            Webcam access unavailable or blocked.<br>Use file attachment below:
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <button id="btn-snap-camera" class="btn btn-secondary btn-sm" style="flex: 1;">Snap Photo</button>
+          <label class="btn btn-secondary btn-sm" style="flex: 1; margin: 0; cursor: pointer;">
+            Upload File
+            <input type="file" id="camera-file-input" accept="image/*" capture="environment" style="display: none;">
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-camera">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-save-camera-photo">Attach Photo to Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ANNOTATE STOP -->
+  <div id="modal-annotate" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Classify Machine Stoppage</span>
+        <button class="modal-close" id="btn-close-annotate">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="modal-annotate-stop-id">
+        <div class="form-group">
+          <label class="form-label">Root Cause Reason</label>
+          <select id="modal-annotate-reason" class="select-field"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notes & Observations</label>
+          <textarea id="modal-annotate-comment" class="textarea-field" rows="3" placeholder="Add technical details, part number, defect description..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-annotate">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-submit-annotate">Save Classification</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD USER (Supervisor/Admin) -->
+  <div id="modal-add-user" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Add New User Account</span>
+        <button class="modal-close" id="btn-close-add-user">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Username</label>
+          <input type="text" id="new-user-username" class="input-field" placeholder="e.g. operator4">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Full Name</label>
+          <input type="text" id="new-user-fullname" class="input-field" placeholder="e.g. Rachid Mansouri">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input type="password" id="new-user-password" class="input-field" placeholder="Initial password">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Role</label>
+          <select id="new-user-role" class="select-field">
+            <option value="operator">Operator</option>
+            <option value="pilot">Pilot (Production Lead)</option>
+            <option value="supervisor">Supervisor</option>
+            <option value="director">Director</option>
+            <option value="admin">System Admin</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-add-user">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-submit-add-user">Create User</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD REASON (Supervisor) -->
+  <div id="modal-add-reason" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Add Stoppage Reason</span>
+        <button class="modal-close" id="btn-close-add-reason">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select id="new-reason-category" class="select-field">
+            <option value="Mechanical">Mechanical</option>
+            <option value="Electrical">Electrical</option>
+            <option value="Operational">Operational / Raw Material</option>
+            <option value="Quality & Prep">Quality & Changeover</option>
+            <option value="Staff & Break">Staff & Break</option>
+            <option value="Cleaning">Cleaning & Sanitation</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reason Name</label>
+          <input type="text" id="new-reason-name" class="input-field" placeholder="e.g. Motor bearing overheated">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reason Code</label>
+          <input type="text" id="new-reason-code" class="input-field" placeholder="e.g. MEC_BEARING_01">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-add-reason">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-submit-add-reason">Add Reason</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD PLC CONNECTION (Admin) -->
+  <div id="modal-add-plc" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Register New Factory PLC</span>
+        <button class="modal-close" id="btn-close-add-plc">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Profile / Line Name</label>
+          <input type="text" id="new-plc-name" class="input-field" placeholder="e.g. Line 2 Fruit Sorter">
+        </div>
+        <div class="form-group">
+          <label class="form-label">PLC Brand</label>
+          <select id="new-plc-brand" class="select-field">
+            <option value="Omron">Omron (SYSMAC CJ/CS/CP/NJ)</option>
+            <option value="Delta">Delta Electronics (DVP / AS Series)</option>
+            <option value="Siemens">Siemens (S7-1200 / S7-1500 / S7-300)</option>
+            <option value="Modbus">Modbus TCP Standard</option>
+            <option value="Rockwell">Rockwell / Allen-Bradley</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Communication Protocol</label>
+          <select id="new-plc-protocol" class="select-field">
+            <option value="OMRON_FINS_TCP">Omron FINS over TCP/IP</option>
+            <option value="MODBUS_TCP">Modbus TCP</option>
+            <option value="DELTA_MODBUS">Delta Modbus TCP</option>
+            <option value="SIEMENS_S7">Siemens S7comm</option>
+          </select>
+        </div>
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 8px;">
+          <div class="form-group">
+            <label class="form-label">IP Address</label>
+            <input type="text" id="new-plc-ip" class="input-field" placeholder="192.168.111.99">
+          </div>
+          <div class="form-group">
+            <label class="form-label">TCP Port</label>
+            <input type="number" id="new-plc-port" class="input-field" value="9600">
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="form-group">
+            <label class="form-label">Node / Station ID</label>
+            <input type="number" id="new-plc-node" class="input-field" value="1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Unit / Slave ID</label>
+            <input type="number" id="new-plc-unit" class="input-field" value="1">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-add-plc">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-submit-add-plc">Save PLC Profile</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: EDIT MACHINE MAPPING (Admin) -->
+  <div id="modal-edit-mapping" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">Configure Machine Address Mapping</span>
+        <button class="modal-close" id="btn-close-edit-mapping">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-mapping-id">
+        <div class="form-group">
+          <label class="form-label">Machine Name</label>
+          <input type="text" id="edit-mapping-name" class="input-field">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Assigned PLC Connection</label>
+          <select id="edit-mapping-plc" class="select-field"></select>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="form-group">
+            <label class="form-label">Memory Area</label>
+            <select id="edit-mapping-area" class="select-field">
+              <option value="DM">DM (Data Memory - D)</option>
+              <option value="WR">WR (Work Area - W)</option>
+              <option value="CIO">CIO (Core I/O)</option>
+              <option value="EM">EM (Extended Memory - E0)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">State Register (estado_maq)</label>
+            <input type="number" id="edit-mapping-status-reg" class="input-field" placeholder="e.g. 1200">
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="form-group">
+            <label class="form-label">Run Status Word</label>
+            <input type="number" id="edit-mapping-run-word" class="input-field" placeholder="e.g. 213 (or blank)">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Run Status Bit (0-15)</label>
+            <input type="number" id="edit-mapping-run-bit" class="input-field" placeholder="e.g. 3 (or blank)">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cycle / Rate Register (cpm)</label>
+          <input type="number" id="edit-mapping-rate-reg" class="input-field" placeholder="e.g. 2050 (or blank)">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-cancel-edit-mapping">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="btn-submit-edit-mapping">Save Mapping</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
