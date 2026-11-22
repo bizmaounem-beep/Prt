@@ -3,6 +3,29 @@
  * Real-time Hardware Telemetry, Strict RBAC Authentication & Multi-PLC Management
  */
 
+// ─── Toast Notification System ──────────────────────────────────
+const TOAST_ICONS = { success: '✔', error: '✖', warning: '⚠', info: 'ℹ' };
+
+function showToast(msg, type = 'info', durationMs = 3500) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span class="toast-icon">${TOAST_ICONS[type] || 'ℹ'}</span><span class="toast-msg">${msg}</span>`;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 220);
+  }, durationMs);
+}
+
+function showConfirm(msg) {
+  return new Promise(resolve => {
+    // Simple native confirm — good enough for industrial use
+    resolve(window.confirm(msg));
+  });
+}
+
 // Application State
 const state = {
   currentUser: null, // { id, username, full_name, role }
@@ -63,12 +86,14 @@ const el = {
 
   appScreen: document.getElementById("app-screen"),
   userDisplay: document.getElementById("user-display"),
+  userAvatarInitials: document.getElementById("user-avatar-initials"),
   btnLogout: document.getElementById("btn-logout"),
   liveClock: document.getElementById("live-clock"),
-  topbarPlcBadge: document.getElementById("topbar-plc-badge"),
   plcPill: document.getElementById("plc-status-pill"),
+  plcLed: document.getElementById("plc-led"),
   plcText: document.getElementById("plc-status-text"),
   prodPill: document.getElementById("prod-status-pill"),
+  prodLed: document.getElementById("prod-led"),
   prodText: document.getElementById("prod-status-text"),
   prodBanner: document.getElementById("production-banner"),
   bannerTitle: document.getElementById("banner-title"),
@@ -264,13 +289,23 @@ function initAuthenticatedApp() {
   const user = state.currentUser;
   el.userDisplay.textContent = `${user.full_name} (${user.role.toUpperCase()})`;
 
-  // Render tabs authorized for this user's role
+  // Set avatar initials
+  if (el.userAvatarInitials) {
+    const parts = (user.full_name || user.username || "?").split(" ");
+    el.userAvatarInitials.textContent = parts.map(p => p[0]).join("").slice(0, 2).toUpperCase();
+  }
+
+  // Role-based nav tabs with icons
+  const TAB_ICONS = {
+    dashboard: "◈", reports: "⬇", pilot: "▶", supervisor: "◉",
+    history: "🕐", admin: "⚙", operator: "◧", docs: "☰"
+  };
   const tabs = ROLE_TABS[user.role] || ROLE_TABS.director;
   el.navTabs.innerHTML = "";
   tabs.forEach((tab, index) => {
     const btn = document.createElement("button");
     btn.className = `nav-tab ${index === 0 ? "active" : ""}`;
-    btn.textContent = tab.label;
+    btn.innerHTML = `<span class="nav-tab-icon">${TAB_ICONS[tab.id] || "·"}</span>${tab.label}`;
     btn.onclick = () => switchTab(tab.id);
     btn.dataset.tabId = tab.id;
     el.navTabs.appendChild(btn);
@@ -321,7 +356,10 @@ function initWebSocket() {
   };
 
   state.ws.onclose = () => {
-    el.plcPill.innerHTML = `<span class="dot dot-red"></span><span>PLC OFFLINE</span>`;
+    if (el.plcPill) {
+      el.plcPill.className = "status-pill plc-offline";
+      el.plcPill.innerHTML = `<span class="led led-red"></span><span>PLC OFFLINE</span>`;
+    }
     state.ws = null;
     if (state.currentUser) setTimeout(initWebSocket, 2000);
   };
@@ -333,14 +371,15 @@ function updateTelemetryUI(data) {
   const activePlc = data.active_plc_info;
 
   if (isConnected && activePlc) {
-    el.plcPill.innerHTML = `<span class="dot dot-green"></span><span>${activePlc.brand.toUpperCase()} ONLINE</span>`;
-    el.topbarPlcBadge.textContent = `${activePlc.protocol}`;
-    el.driverModeTag.textContent = `PLC: ${activePlc.name} (${activePlc.ip_address}:${activePlc.port})`;
+    el.plcPill.className = "status-pill plc-online";
+    el.plcPill.innerHTML = `<span class="led led-green"></span><span>${activePlc.brand.toUpperCase()} ONLINE</span>`;
+    if (el.driverModeTag) el.driverModeTag.textContent = `PLC: ${activePlc.name} (${activePlc.ip_address}:${activePlc.port})`;
   } else {
     const ip = activePlc ? activePlc.ip_address : "192.168.111.99";
     const port = activePlc ? activePlc.port : 9600;
-    el.plcPill.innerHTML = `<span class="dot dot-red"></span><span>PLC OFFLINE (${ip})</span>`;
-    el.driverModeTag.textContent = `PLC: DISCONNECTED (${ip}:${port})`;
+    el.plcPill.className = "status-pill plc-offline";
+    el.plcPill.innerHTML = `<span class="led led-red"></span><span>PLC OFFLINE (${ip})</span>`;
+    if (el.driverModeTag) el.driverModeTag.textContent = `PLC: DISCONNECTED (${ip}:${port})`;
   }
 
   // 2. Production Gating Status
@@ -349,10 +388,11 @@ function updateTelemetryUI(data) {
 
   if (state.productionActive) {
     el.prodBanner.className = "prod-banner active";
-    el.bannerDot.className = "dot dot-green";
+    if (el.bannerDot) { el.bannerDot.className = "led led-green"; }
     el.bannerTitle.textContent = `PRODUCTION RUNNING • ${state.productionSession?.shift || 'Current'} Shift`;
     el.bannerDesc.textContent = `Started by ${state.productionSession?.pilot_name || 'Pilot'}. Machine stops and alarm faults are actively logged.`;
-    el.prodPill.innerHTML = `<span class="dot dot-green"></span><span>PRODUCTION ACTIVE</span>`;
+    el.prodPill.className = "status-pill prod-active";
+    el.prodPill.innerHTML = `<span class="led led-green"></span><span>PRODUCTION ACTIVE</span>`;
 
     el.pilotStatusText.textContent = "RUNNING (ACTIVE)";
     el.pilotStatusText.style.color = "#34d399";
@@ -360,10 +400,11 @@ function updateTelemetryUI(data) {
     el.pilotSessionBtns.innerHTML = `<button class="btn btn-danger btn-sm" onclick="endProductionSession()">End Production Shift</button>`;
   } else {
     el.prodBanner.className = "prod-banner inactive";
-    el.bannerDot.className = "dot dot-red";
+    if (el.bannerDot) { el.bannerDot.className = "led led-red"; }
     el.bannerTitle.textContent = "PRODUCTION IS STOPPED / IDLE";
     el.bannerDesc.textContent = "Pilot has not started active production. Machine stops and faults are currently ignored to prevent false downtime penalties during setup/cleaning.";
-    el.prodPill.innerHTML = `<span class="dot dot-red"></span><span>PRODUCTION IDLE</span>`;
+    el.prodPill.className = "status-pill prod-idle";
+    el.prodPill.innerHTML = `<span class="led led-grey"></span><span>PRODUCTION IDLE</span>`;
 
     el.pilotStatusText.textContent = "INACTIVE / STOPPED";
     el.pilotStatusText.style.color = "#ef4444";
@@ -389,13 +430,13 @@ function updateTelemetryUI(data) {
   if (data.active_stops_count !== undefined) {
     el.kpiActiveStops.textContent = data.active_stops_count;
     if (data.active_stops_count > 0) {
-      el.kpiActiveStops.style.color = "#f87171";
+      el.kpiActiveStops.style.color = "var(--sig-red)";
       el.kpiActiveFooter.textContent = `${data.active_stops_count} machine(s) stopped!`;
-      el.kpiActiveFooter.style.color = "#fca5a5";
+      el.kpiActiveFooter.style.color = "var(--sig-red)";
     } else {
-      el.kpiActiveStops.style.color = "#34d399";
+      el.kpiActiveStops.style.color = "var(--sig-green)";
       el.kpiActiveFooter.textContent = "All lines running";
-      el.kpiActiveFooter.style.color = "var(--text-muted)";
+      el.kpiActiveFooter.style.color = "var(--text-lo)";
     }
   }
 
@@ -404,7 +445,7 @@ function updateTelemetryUI(data) {
   }
 
   if (data.cycles_per_minute !== undefined) {
-    el.kpiCycleRate.innerHTML = `${data.cycles_per_minute} <span style="font-size: 13px; font-weight: normal; color: var(--text-secondary);">cpm</span>`;
+    el.kpiCycleRate.innerHTML = `${data.cycles_per_minute} <span class="kpi-unit">cpm</span>`;
   }
 
   // 4. Machines Grid
@@ -455,30 +496,35 @@ function renderMachineCards(statusMap, activeStops) {
       stopwatchHtml = `
         <div class="stopwatch-alert">
           <div>
-            <div style="font-size: 10px; font-weight: 700; color: #f87171; text-transform: uppercase;">Active Stop Incident</div>
-            <div style="font-size: 11px; color: #fca5a5;">${active.reason_name || 'Pending Classification'}</div>
+            <div class="stopwatch-label">Active Stop!</div>
+            <div style="font-size: 10px; color: var(--sig-red); margin-top: 2px;">${active.reason_name || 'Pending Classification'}</div>
           </div>
           <div class="stopwatch-time">${formatDuration(active.current_duration || 0)}</div>
         </div>
       `;
     }
 
+    const stateDesc = isOnline ? (m.state_desc || m.state_text) : 'NO CARRIER';
     card.innerHTML = `
       <div class="machine-card-header">
         <div>
-          <div class="machine-code">${m.code}</div>
-          <div class="machine-name">${m.name}</div>
+          <div class="machine-id">${m.code}</div>
+          <div class="machine-name-label">${m.name}</div>
         </div>
-        <span class="status-badge ${badgeClass}">${m.state_text}</span>
+        <span class="state-badge ${badgeClass}">${m.state_text}</span>
       </div>
-      <div class="machine-details">
-        <div class="detail-item">
-          <span class="detail-label">Hardware Signal</span>
-          <span class="detail-val">${isOnline ? `&${m.state_code} (${m.state_desc})` : 'NO CARRIER'}</span>
+      <div class="machine-metrics">
+        <div class="metric-cell">
+          <span class="metric-label">HW Signal</span>
+          <span class="metric-value">${isOnline ? m.state_code : '—'}</span>
         </div>
-        <div class="detail-item">
-          <span class="detail-label">Operational State</span>
-          <span class="detail-val">${isOnline ? (isRunning ? "RUNNING" : "STOPPED") : "DISCONNECTED"}</span>
+        <div class="metric-cell">
+          <span class="metric-label">State</span>
+          <span class="metric-value">${isOnline ? (isRunning ? 'RUN' : 'STOP') : 'DISC.'}</span>
+        </div>
+        <div class="metric-cell">
+          <span class="metric-label">PLC</span>
+          <span class="metric-value">${isOnline ? 'ONLINE' : 'OFFLINE'}</span>
         </div>
       </div>
       ${stopwatchHtml}
@@ -491,8 +537,9 @@ function renderActiveStopsTable(activeStops) {
   if (!activeStops || activeStops.length === 0) {
     el.activeStopsTbody.innerHTML = `
       <tr>
-        <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 18px;">
-          No active machine stoppages at this moment.
+        <td colspan="8" class="empty-state-cell">
+          <span class="empty-state-icon">✔</span>
+          No active machine stoppages at this moment
         </td>
       </tr>
     `;
@@ -502,17 +549,17 @@ function renderActiveStopsTable(activeStops) {
   el.activeStopsTbody.innerHTML = "";
   activeStops.forEach(s => {
     const tr = document.createElement("tr");
-    const photoCell = s.photo_path 
-      ? `<a href="${s.photo_path}" target="_blank" style="color: #38bdf8; text-decoration: underline;">View Photo</a>` 
-      : `<span style="color: var(--text-muted);">None</span>`;
+    const photoCell = s.photo_path
+      ? `<a href="${s.photo_path}" target="_blank" style="color: var(--accent);">View Photo</a>`
+      : `<span class="text-muted">None</span>`;
 
     tr.innerHTML = `
-      <td style="font-family: var(--font-mono); font-weight: 700; color: #f87171;">${s.machine_code}</td>
+      <td class="mono" style="font-weight: 700; color: var(--sig-red);">${s.machine_code}</td>
       <td>${s.machine_name}</td>
       <td>${new Date(s.start_time).toLocaleTimeString()}</td>
-      <td style="font-family: var(--font-mono); font-weight: 700; color: #fca5a5;">${formatDuration(s.current_duration || 0)}</td>
-      <td><span class="status-badge badge-stopped">${s.state_label}</span></td>
-      <td>${s.reason_name || '<em style="color: #fbbf24;">Pending Classification</em>'}</td>
+      <td class="mono" style="font-weight: 700; color: #fca5a5;">${formatDuration(s.current_duration || 0)}</td>
+      <td><span class="state-badge badge-stopped">${s.state_label}</span></td>
+      <td>${s.reason_name || '<em style="color: var(--sig-amber);">Pending</em>'}</td>
       <td>${photoCell}</td>
       <td>
         <button class="btn btn-primary btn-sm" onclick="openAnnotateModal(${s.stop_id})">Classify</button>
@@ -540,19 +587,21 @@ async function startProductionSession() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Error starting production");
+    showToast("Production session started", "success");
   } catch (err) {
-    alert("Failed to start production: " + err.message);
+    showToast("Failed to start production: " + err.message, "error");
   }
 }
 
 async function endProductionSession() {
-  if (!confirm("Are you sure you want to end active production? Machine stops will no longer be tracked.")) return;
+  if (!await showConfirm("End active production? Machine stops will no longer be tracked.")) return;
   try {
     const res = await fetch(`/api/production/end?pilot_id=${state.currentUser.id}`, { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Error ending production");
+    showToast("Production session ended", "info");
   } catch (err) {
-    alert("Failed to end production: " + err.message);
+    showToast("Failed to end production: " + err.message, "error");
   }
 }
 
@@ -608,7 +657,7 @@ async function saveAssignment(machineId) {
   const select = document.getElementById(`assign-select-${machineId}`);
   const opId = parseInt(select.value);
   if (!opId) {
-    alert("Please select an operator to allocate.");
+    showToast("Please select an operator to allocate.", "warning");
     return;
   }
 
@@ -623,11 +672,11 @@ async function saveAssignment(machineId) {
       })
     });
     if (res.ok) {
-      alert("Line assignment updated.");
+      showToast("Line assignment saved.", "success");
       loadAssignments();
     }
   } catch (err) {
-    alert("Failed to allocate operator: " + err.message);
+    showToast("Failed to allocate operator: " + err.message, "error");
   }
 }
 
@@ -655,15 +704,15 @@ function updateOperatorScreenLive(statusMap, activeStops) {
 
   if (status) {
     if (!status.plc_online) {
-      el.opStatusBadge.className = "status-badge badge-offline";
+      el.opStatusBadge.className = "state-badge badge-offline";
       el.opStatusBadge.textContent = "OFFLINE";
       el.opStopwatchBox.style.display = "none";
     } else if (status.is_running) {
-      el.opStatusBadge.className = "status-badge badge-running";
+      el.opStatusBadge.className = "state-badge badge-running";
       el.opStatusBadge.textContent = "RUNNING";
       el.opStopwatchBox.style.display = "none";
     } else {
-      el.opStatusBadge.className = "status-badge badge-stopped";
+      el.opStatusBadge.className = "state-badge badge-stopped";
       el.opStatusBadge.textContent = status.state_text;
       el.opStopwatchBox.style.display = "flex";
 
@@ -788,26 +837,26 @@ async function loadUsers() {
 }
 
 async function resetUserPassword(userId, username) {
-  if (!confirm(`Reset password for user '${username}' to default '123456'?`)) return;
+  if (!await showConfirm(`Reset password for '${username}' to default '123456'?`)) return;
   try {
     const res = await fetch(`/api/auth/users/${userId}/reset-password`, { method: "POST" });
     const data = await res.json();
-    alert(`Success: ${data.message}`);
+    showToast(`Password reset: ${data.message}`, "success");
   } catch (err) {
-    alert("Failed to reset password: " + err.message);
+    showToast("Failed to reset password: " + err.message, "error");
   }
 }
 
 async function deleteUserAccount(userId, username) {
-  if (!confirm(`Permanently delete user '${username}'?`)) return;
+  if (!await showConfirm(`Permanently delete user '${username}'?`)) return;
   try {
     const res = await fetch(`/api/auth/users/${userId}`, { method: "DELETE" });
     if (res.ok) {
-      alert(`User '${username}' deleted.`);
+      showToast(`User '${username}' deleted.`, "info");
       loadUsers();
     }
   } catch (err) {
-    alert("Failed to delete user: " + err.message);
+    showToast("Failed to delete user: " + err.message, "error");
   }
 }
 
@@ -936,11 +985,11 @@ async function activatePlcProfile(plcId) {
   try {
     const res = await fetch(`/api/plcs/${plcId}/activate`, { method: "PUT" });
     if (res.ok) {
-      alert("Activated PLC profile. Reconnecting hardware driver...");
+      showToast("PLC profile activated. Reconnecting driver...", "success");
       loadAdminPlcs();
     }
   } catch (err) {
-    alert("Error activating PLC: " + err.message);
+    showToast("Error activating PLC: " + err.message, "error");
   }
 }
 
@@ -1031,11 +1080,11 @@ async function saveMachineMapping() {
     });
     if (res.ok) {
       el.modalEditMapping.style.display = "none";
-      alert("Machine address mapping saved successfully.");
+      showToast("Machine address mapping saved.", "success");
       loadAdminMappings();
     }
   } catch (err) {
-    alert("Error saving mapping: " + err.message);
+    showToast("Error saving mapping: " + err.message, "error");
   }
 }
 
@@ -1078,7 +1127,7 @@ async function submitAnnotation() {
   const comment = el.modalAnnotateComment.value;
 
   if (!reasonId) {
-    alert("Please select a root cause reason from the catalog.");
+    showToast("Please select a root cause reason.", "warning");
     return;
   }
 
@@ -1094,11 +1143,11 @@ async function submitAnnotation() {
     });
     if (res.ok) {
       el.modalAnnotate.style.display = "none";
-      alert("Stoppage classification saved.");
+      showToast("Stoppage classification saved.", "success");
       if (state.activeTab === "history") loadHistoricalStops();
     }
   } catch (err) {
-    alert("Failed to save annotation: " + err.message);
+    showToast("Failed to save annotation: " + err.message, "error");
   }
 }
 
@@ -1150,14 +1199,14 @@ function snapCameraPhoto() {
 async function uploadCapturedPhoto() {
   const stopId = state.selectedStopForPhoto;
   if (!stopId) {
-    alert("No stoppage incident selected for photo attachment.");
+    showToast("No stoppage incident selected for photo.", "warning");
     return;
   }
 
   const canvas = el.cameraCanvas;
   canvas.toBlob(async (blob) => {
     if (!blob) {
-      alert("Please snap a photo first or select a file.");
+      showToast("Please snap a photo or upload a file first.", "warning");
       return;
     }
 
@@ -1172,14 +1221,14 @@ async function uploadCapturedPhoto() {
       const data = await res.json();
       if (res.ok) {
         closeCameraModal();
-        alert("Photo attached to stoppage successfully!");
+        showToast("Photo attached to stoppage.", "success");
         if (state.currentUser && state.currentUser.role === "operator") {
           el.opPhotoPreviewWrap.style.display = "block";
           el.opPhotoPreviewImg.src = data.photo_url;
         }
       }
     } catch (err) {
-      alert("Photo upload error: " + err.message);
+      showToast("Photo upload error: " + err.message, "error");
     }
   }, "image/jpeg", 0.85);
 }
@@ -1188,6 +1237,15 @@ async function uploadCapturedPhoto() {
 function initEventListeners() {
   el.loginForm.addEventListener("submit", handleLogin);
   el.btnLogout.addEventListener("click", handleLogout);
+
+  // Credential pill click-to-fill
+  document.querySelectorAll(".auth-role-pill").forEach(pill => {
+    pill.addEventListener("click", () => {
+      el.loginUsername.value = pill.dataset.user;
+      el.loginPassword.value = pill.dataset.pass;
+      el.loginUsername.focus();
+    });
+  });
 
   // Reports
   el.btnApplyReportFilter.addEventListener("click", loadReportPreview);
@@ -1214,11 +1272,11 @@ function initEventListeners() {
     const active = state.activeStops.find(s => s.machine_code === currentMachCode);
 
     if (!active) {
-      alert("No active stoppage underway on this machine to classify.");
+      showToast("No active stoppage on this machine to classify.", "warning");
       return;
     }
     if (!reasonId) {
-      alert("Please select a root cause reason from the catalog.");
+      showToast("Please select a root cause reason.", "warning");
       return;
     }
 
@@ -1232,9 +1290,9 @@ function initEventListeners() {
           annotated_by: state.currentUser.id
         })
       });
-      if (res.ok) alert("Classification saved!");
+      if (res.ok) showToast("Classification saved.", "success");
     } catch (err) {
-      alert("Error: " + err.message);
+      showToast("Error: " + err.message, "error");
     }
   });
 
@@ -1279,7 +1337,7 @@ function initEventListeners() {
     const ro = el.newUserRole.value;
 
     if (!un || !fn || !pw) {
-      alert("All fields are required.");
+      showToast("All fields are required.", "warning");
       return;
     }
 
@@ -1291,14 +1349,14 @@ function initEventListeners() {
       });
       if (res.ok) {
         el.modalAddUser.style.display = "none";
-        alert("User account created successfully.");
+        showToast("User account created.", "success");
         loadUsers();
       } else {
         const err = await res.json();
-        alert(err.detail || "Error creating user");
+        showToast(err.detail || "Error creating user", "error");
       }
     } catch (err) {
-      alert("Network error: " + err.message);
+      showToast("Network error: " + err.message, "error");
     }
   });
 
@@ -1312,7 +1370,7 @@ function initEventListeners() {
     const code = el.newReasonCode.value.trim();
 
     if (!name || !code) {
-      alert("Name and code are required.");
+      showToast("Name and code are required.", "warning");
       return;
     }
 
@@ -1324,11 +1382,11 @@ function initEventListeners() {
       });
       if (res.ok) {
         el.modalAddReason.style.display = "none";
-        alert("Reason added to catalog.");
+        showToast("Reason added to catalog.", "success");
         loadReasons();
       }
     } catch (err) {
-      alert("Error: " + err.message);
+      showToast("Error: " + err.message, "error");
     }
   });
 
@@ -1346,7 +1404,7 @@ function initEventListeners() {
     const unit = parseInt(el.newPlcUnit.value);
 
     if (!name || !ip || !port) {
-      alert("Profile name, IP address, and Port are required.");
+      showToast("Profile name, IP address, and Port are required.", "warning");
       return;
     }
 
@@ -1360,11 +1418,11 @@ function initEventListeners() {
       });
       if (res.ok) {
         el.modalAddPlc.style.display = "none";
-        alert("PLC Profile registered.");
+        showToast("PLC Profile registered.", "success");
         loadAdminPlcs();
       }
     } catch (err) {
-      alert("Error: " + err.message);
+      showToast("Error: " + err.message, "error");
     }
   });
 
